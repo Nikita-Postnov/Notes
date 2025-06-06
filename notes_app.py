@@ -492,7 +492,7 @@ class NotesApp:
         # Кнопки списков
         self.bullet_list_btn = ttk.Button(
             toolbar_frame,
-            text="•",
+            text="Марк.",
             width=2,
             command=lambda: self.insert_list("bullet"),
             style='Tool.TButton'
@@ -501,7 +501,7 @@ class NotesApp:
 
         self.numbered_list_btn = ttk.Button(
             toolbar_frame,
-            text="1.",
+            text="Нум.",
             width=2,
             command=lambda: self.insert_list("numbered"),
             style='Tool.TButton'
