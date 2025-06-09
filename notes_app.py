@@ -28,7 +28,7 @@ from tkinter import (
 )
 import tkinter as tk
 import webbrowser
-
+from tkinterdnd2 import DND_FILES, TkinterDnD
 try:
     import pyperclip
 except ImportError:
@@ -142,7 +142,7 @@ class AudioRecorder:
 
 class NotesApp:
     def __init__(self):
-        self.root = tk.Tk()
+        self.root = TkinterDnD.Tk()
         self._init_colors()
         self._setup_main_window()
         self._setup_data()
@@ -302,6 +302,13 @@ class NotesApp:
             messagebox.showerror(
                 "Ошибка", f"Не удалось сохранить настройки: {str(e)}")
 
+    def delete_reminder(self, note_id):
+        if note_id in self.notes and "reminder" in self.notes[note_id]:
+            self.notes[note_id]["reminder"] = None
+            self._save_data()
+            self._load_notes_list()
+            messagebox.showinfo("Успех", "Напоминание удалено")
+
     def _create_header(self):
         header = tk.Frame(self.root, bg=self.colors["white"], height=60)
         header.pack(fill=tk.X, padx=10, pady=5)
@@ -315,6 +322,7 @@ class NotesApp:
             ("📥", "primary", self.import_note, "Импорт заметки"),
             ("⏰", "info", self.set_reminder, "Установить напоминание"),
             ("🔗", "info", self.insert_link, "Вставить ссылку"),
+            ("⭐", "highlight", self.toggle_favorite, "Добавить в избранное"),
         ]
         for text, color, command, tooltip in buttons:
             btn = ttk.Button(
@@ -342,6 +350,14 @@ class NotesApp:
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self._create_sidebar(main_frame)
         self._create_editor(main_frame)
+
+    def toggle_favorite(self):
+        if not self.current_note:
+            return
+        self.notes[self.current_note]["favorite"] = not self.notes[self.current_note].get(
+            "favorite", False)
+        self._load_notes_list()
+        self._save_data()
 
     def _create_sidebar(self, parent):
         sidebar = tk.Frame(parent, bg=self.colors["sidebar"], width=300)
@@ -388,7 +404,7 @@ class NotesApp:
             fg=self.colors["text"],
         )
         sort_label.pack(anchor=tk.W)
-        self.sort_var = tk.StringVar(value="по_дате_изменения_убыв")
+        self.sort_var = tk.StringVar(value="По дате изменения (убыв.)")
         sort_options = [
             ("По дате изменения (убыв.)", "по_дате_изменения_убыв"),
             ("По дате изменения (возр.)", "по_дате_изменения_возр"),
@@ -408,6 +424,7 @@ class NotesApp:
         sort_menu.pack(fill=tk.X, pady=(5, 0))
         sort_menu.bind("<<ComboboxSelected>>",
                        lambda e: self._load_notes_list())
+        sort_menu.set("По дате изменения (убыв.)")
         notes_frame = tk.Frame(sidebar, bg=self.colors["sidebar"])
         notes_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         scrollbar = tk.Scrollbar(notes_frame)
@@ -454,6 +471,62 @@ class NotesApp:
         self._create_title_field(self.editor_frame)
         self._create_content_field(self.editor_frame)
         self._create_info_label(self.editor_frame)
+
+    def _on_drop_files(self, event):
+        files = self.root.tk.splitlist(event.data)
+        for file_path in files:
+            if os.path.isfile(file_path):
+                try:
+                    self._handle_dropped_file(file_path)
+                except Exception as e:
+                    logger.error(f"Ошибка при добавлении файла через DnD: {e}")
+
+    def _handle_dropped_file(self, file_path: str):
+        if not self.current_note:
+            messagebox.showwarning("Нет заметки", "Сначала выберите заметку.")
+            return
+
+        original_name = os.path.basename(file_path)
+        file_extension = os.path.splitext(original_name)[1].lower()
+        safe_name = self._sanitize_filename(original_name)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{safe_name}"
+        destination = os.path.join(
+            self._ensure_note_attachments_dir(self.current_note), filename)
+
+        shutil.copy2(file_path, destination)
+
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"}
+        audio_extensions = {".mp3", ".wav", ".ogg"}
+
+        if file_extension in image_extensions:
+            self._generate_thumbnail(destination)
+            self._insert_image(self.current_note, filename, position="insert")
+            attachment_type = "image"
+        elif file_extension in audio_extensions:
+            attachment_type = "audio"
+        else:
+            attachment_type = "file"
+
+        attachment = {
+            "type": attachment_type,
+            "filename": filename,
+            "original_name": original_name,
+            "added": datetime.now().isoformat(),
+        }
+
+        if "attachments" not in self.notes[self.current_note]:
+            self.notes[self.current_note]["attachments"] = []
+
+        self.notes[self.current_note]["attachments"].append(attachment)
+        if attachment_type != "image":
+            self._insert_file_link(original_name, filename, position="insert")
+
+        self.notes[self.current_note]["modified"] = datetime.now().isoformat()
+        self._load_attachments()
+        self._load_notes_list()
+        self._save_data()
+        logger.info(f"Файл добавлен через Drag-and-Drop: {original_name}")
 
     def _create_title_field(self, parent):
         self.title_frame = tk.Frame(parent, bg=self.colors["white"])
@@ -546,8 +619,8 @@ class NotesApp:
         size_menu = ttk.Combobox(
             self.toolbar_frame,
             textvariable=self.font_size,
-            values=["8", "9", "10", "11", "12",
-                    "14", "16", "18", "20", "22", "24"],
+            values=["8", "9", "10", "11", "12", "14",
+                    "16", "18", "20", "22", "24"],
             width=3,
             state="readonly",
         )
@@ -596,6 +669,11 @@ class NotesApp:
         )
         self.text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.text_area.yview)
+
+        # Настройка drag-and-drop после создания text_area
+        self.text_area.drop_target_register(DND_FILES)
+        self.text_area.dnd_bind('<<Drop>>', self._on_drop_files)
+
         self.text_area.bind("<Double-1>", self._on_double_click)
         self.text_area.tag_configure("bold", font=("Segoe UI", 11, "bold"))
         self.text_area.tag_configure("italic", font=("Segoe UI", 11, "italic"))
@@ -833,6 +911,8 @@ class NotesApp:
             indicators = []
             if any(item["type"] == "image" for item in content):
                 indicators.append("🖼️")
+            if note_data.get("favorite"):
+                indicators.append("⭐")
             if note_data.get("attachments"):
                 indicators.append("📎")
             if note_data.get("reminder"):
@@ -878,6 +958,7 @@ class NotesApp:
             "content": [],
             "created": timestamp,
             "modified": timestamp,
+            "favorite": False,
             "attachments": [],
         }
         self._ensure_note_attachments_dir(note_id)
@@ -2704,6 +2785,15 @@ class NotesApp:
             )
 
     def show_help(self):
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Справка")
+        help_window.resizable(False, False)
+        help_window.transient(self.root)
+        help_window.grab_set()
+
+        text_area = scrolledtext.ScrolledText(
+            help_window, wrap=tk.WORD, font=("Segoe UI", 10), padx=10, pady=10
+        )
         help_text = (
             "📝 Мои Заметки - Руководство пользователя\n\n"
             "Горячие клавиши:\n"
@@ -2732,26 +2822,37 @@ class NotesApp:
             "- Автосохранение с настраиваемым интервалом\n"
             "- Поиск по заголовкам и содержимому\n"
         )
-        help_window = tk.Toplevel(self.root)
-        help_window.title("Справка")
-        help_window.geometry("500x600")
-        help_window.resizable(False, False)
-        help_window.transient(self.root)
-        help_window.grab_set()
-        text_area = scrolledtext.ScrolledText(
-            help_window, wrap=tk.WORD, font=("Segoe UI", 10), padx=10, pady=10
-        )
         text_area.insert(tk.END, help_text)
         text_area.config(state=tk.DISABLED)
         text_area.pack(fill=tk.BOTH, expand=True)
-        close_btn = ttk.Button(
-            help_window,
-            text="Закрыть",
-            command=help_window.destroy,
-            style="Primary.TButton",
+
+        button_frame = tk.Frame(help_window)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+
+        close_button = tk.Button(
+            button_frame, text="Закрыть", command=help_window.destroy
         )
-        close_btn.pack(pady=10)
-        logger.info("Открыто окно справки")
+        close_button.pack(side=tk.RIGHT)
+
+        help_window.bind('<KeyPress-Escape>',
+                         lambda event: help_window.destroy())
+
+        self.root.update_idletasks()
+        help_window.update_idletasks()
+
+        main_width = self.root.winfo_width()
+        main_height = self.root.winfo_height()
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+
+        help_width = 500
+        help_height = 600
+        help_window.geometry(f"{help_width}x{help_height}")
+
+        x = main_x + (main_width - help_width) // 2
+        y = main_y + (main_height - help_height) // 2
+
+        help_window.geometry(f"+{x}+{y}")
 
     def show_autosave_settings(self):
         dialog = tk.Toplevel(self.root)
@@ -2917,3 +3018,41 @@ if __name__ == "__main__":
         messagebox.showerror(
             "Критическая ошибка", f"Не удалось запустить приложение: {str(e)}"
         )
+
+
+# === PATCH: Повтор и удаление напоминаний ===
+
+    def delete_reminder(self):
+        index = self.notes_listbox.curselection()
+        if not index:
+            return
+        note_id = list(self.notes.keys())[index[0]]
+        self.notes[note_id]["reminder"] = None
+        self.notes[note_id]["repeat"] = None
+        self._save_data()
+        self._refresh_notes_list()
+
+    def check_reminders(self):
+        now = datetime.now()
+        for note_id, note in self.notes.items():
+            if "reminder" in note and note["reminder"]:
+                reminder_time = datetime.fromisoformat(note["reminder"])
+                if reminder_time <= now:
+                    self.show_notification(note)
+                    repeat = note.get("repeat")
+                    if repeat == "ежедневно":
+                        note["reminder"] = (
+                            reminder_time + timedelta(days=1)).isoformat()
+                    elif repeat == "еженедельно":
+                        note["reminder"] = (
+                            reminder_time + timedelta(weeks=1)).isoformat()
+                    elif repeat == "ежемесячно":
+                        note["reminder"] = (
+                            reminder_time + timedelta(days=30)).isoformat()
+                    else:
+                        note["reminder"] = None
+                    self._save_data()
+
+    def show_notification(self, note):
+        messagebox.showinfo(
+            "Напоминание", f"Напоминание: {note.get('title', '')}")
